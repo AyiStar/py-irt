@@ -229,7 +229,9 @@ class OneParamLog(abstract_model.IrtModel):
     def export(self):
         return {
             "ability": pyro.param("loc_ability").data.tolist(),
+            "ability_scale": pyro.param("scale_ability").data.tolist(),
             "diff": pyro.param("loc_diff").data.tolist(),
+            "diff_scale": pyro.param("scale_diff").data.tolist()
         }
 
     def fit_MCMC(self, models, items, responses, num_epochs):
