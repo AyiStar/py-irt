@@ -44,7 +44,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-@abstract_model.IrtModel.register("1pl")
+@abstract_model.IrtModel.register("1pl_pred")
 class OneParamLog(abstract_model.IrtModel):
     """1PL IRT model"""
 
@@ -85,8 +85,9 @@ class OneParamLog(abstract_model.IrtModel):
                 ),
             )
 
-        with pyro.plate("observe_data", obs.size(0), device=self.device):
+        with pyro.plate("observe_data", len(items), device=self.device):
             pyro.sample("obs", dist.Bernoulli(logits=ability[models] - diff[items]), obs=obs)
+
 
     def guide_vague(self, models, items, obs):
         """Initialize a 1PL guide with vague priors"""
@@ -144,7 +145,8 @@ class OneParamLog(abstract_model.IrtModel):
             ability = pyro.sample("theta", dist.Normal(mu_theta, 1.0 / u_theta))
         with pyro.plate("bs", self.num_items, device=self.device):
             diff = pyro.sample("b", dist.Normal(mu_b, 1.0 / u_b))
-        with pyro.plate("observe_data", obs.size(0)):
+        
+        with pyro.plate("observe_data", len(items)):
             pyro.sample("obs", dist.Bernoulli(logits=ability[models] - diff[items]), obs=obs)
 
     def guide_hierarchical(self, models, items, obs):
@@ -248,14 +250,11 @@ class OneParamLog(abstract_model.IrtModel):
 
     def predict(self, subjects, items, params_from_file=None):
         """predict p(correct | params) for a specified list of model, item pairs"""
-        if params_from_file is not None:
-            model_params = params_from_file
-        else:
-            model_params = self.export()
-        abilities = np.array([model_params["ability"][i] for i in subjects])
-        diffs = np.array([model_params["diff"][i] for i in items])
-        predictions = 1 / (1 + np.exp(-(abilities - diffs)))
-        return predictions
+        predictive = pyro.infer.Predictive(self.get_model(), guide=self.get_guide(), num_samples=800)
+        svi_samples = predictive(subjects, items, obs=None)
+        svi_obs = svi_samples["obs"].data.cpu().numpy().mean(axis=0, keepdims=False).astype(float)
+        assert len(svi_obs) == len(subjects), f'len(svi_obs) = {svi_obs.shape}'
+        return svi_obs
 
     def summary(self, traces, sites):
         """Aggregate marginals for MCM"""

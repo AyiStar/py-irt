@@ -46,7 +46,9 @@ from py_irt.models import (
     three_param_logistic,
     four_param_logistic,
     multidim_2pl,
-    amortized_1pl
+    amortized_1pl,
+    one_param_hierarchical,
+    one_param_pred,
 )
 from py_irt.io import safe_file, write_json
 from py_irt.dataset import Dataset
