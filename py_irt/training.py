@@ -41,14 +41,13 @@ from sklearn.feature_extraction.text import CountVectorizer
 # pylint: disable=unused-import
 from py_irt.models import (
     abstract_model,
+    one_param_bhm,
     one_param_logistic,
     two_param_logistic,
     three_param_logistic,
     four_param_logistic,
     multidim_2pl,
     amortized_1pl,
-    one_param_hierarchical,
-    one_param_pred,
 )
 from py_irt.io import safe_file, write_json
 from py_irt.dataset import Dataset
@@ -100,6 +99,9 @@ class IrtModelTrainer:
         self._dataset.observation_subjects = [
             self._dataset.observation_subjects[i] for i in training_idx
         ]
+        self._dataset.observation_knowledges = [
+            self._dataset.observation_knowledges[i] for i in training_idx
+        ]
         self._dataset.observation_items = [self._dataset.observation_items[i] for i in training_idx]
         self._dataset.observations = [self._dataset.observations[i] for i in training_idx]
         self._dataset.training_example = [self._dataset.training_example[i] for i in training_idx]
@@ -132,6 +134,7 @@ class IrtModelTrainer:
             "device": device,
             "num_items": len(self._dataset.ix_to_item_id),
             "num_subjects": len(self._dataset.ix_to_subject_id),
+            "num_knowledges": len(self._dataset.ix_to_knowledge_id),
         }
         console.log(f'args: {args}')
         # TODO: Find a better solution to this
@@ -162,12 +165,17 @@ class IrtModelTrainer:
         svi = SVI(self._pyro_model, self._pyro_guide, scheduler, loss=Trace_ELBO())
         subjects = torch.tensor(self._dataset.observation_subjects, dtype=torch.long, device=device)
         items = torch.tensor(self._dataset.observation_items, dtype=torch.long, device=device)
+        knowledges = torch.tensor(self._dataset.observation_knowledges, dtype=torch.long, device=device)
         responses = torch.tensor(self._dataset.observations, dtype=torch.float, device=device)
-        print(subjects.size(), items.size())
+        print(f'Subjects: {subjects.size()}, Items: {items.size()}, Knowledges:{knowledges.size()}')
         # Don't take a step here, just make sure params are initialized
         # so that initializers can modify the params
-        _ = self._pyro_model(subjects, items, responses)
-        _ = self._pyro_guide(subjects, items, responses)
+        if self._config.use_knowledge:
+            _ = self._pyro_model(subjects, items, knowledges, responses)
+            _ = self._pyro_guide(subjects, items, knowledges, responses)
+        else:
+            _ = self._pyro_model(subjects, items, responses)
+            _ = self._pyro_guide(subjects, items, responses)
         for init in self._initializers:
             init.initialize()
 
@@ -179,10 +187,13 @@ class IrtModelTrainer:
         loss = float("inf")
         best_loss = loss
         current_lr = self._config.lr
-        with Live(table) as live:
+        with Live(table, vertical_overflow="visible") as live:
             live.console.print(f"Training Pyro IRT Model for {epochs} epochs")
             for epoch in range(epochs):
-                loss = svi.step(subjects, items, responses)
+                if self._config.use_knowledge:
+                    loss = svi.step(subjects, items, knowledges, responses)
+                else:
+                    loss = svi.step(subjects, items, responses)
                 if loss < best_loss:
                     best_loss = loss
                     self.best_params = self.export(items)

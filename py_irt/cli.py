@@ -43,7 +43,7 @@ from py_irt.models.abstract_model import IrtModel
 from py_irt.io import write_json, write_jsonlines, read_jsonlines, read_json
 
 console = Console()
-app = typer.Typer()
+app = typer.Typer(pretty_exceptions_show_locals=False)
 
 
 @app.command()
@@ -64,6 +64,7 @@ def train(
     seed: Optional[int] = None,
     deterministic: bool = False,
     log_every: int = 100,
+    use_knowledge: bool = False,
 ):
     if config_path is None:
         parsed_config = {}
@@ -87,6 +88,7 @@ def train(
         "log_every": log_every,
         "deterministic": deterministic,
         "seed": seed,
+        "use_knowledge": use_knowledge,
     }
     for key, value in args_config.items():
         if value is not None:
@@ -136,10 +138,11 @@ def train_and_evaluate(
     initializers: Optional[List[str]] = None,
     evaluation: str = "heldout",
     seed: int = 42,
-    train_size: float = 0.9,
+    train_size: float = 0.8,
     config_path: Optional[str] = None,
     dropout: Optional[float] = 0.5,
-    hidden: Optional[int] = 100
+    hidden: Optional[int] = 100,
+    use_knowledge: Optional[bool] = False,
 ):
     if config_path is None:
         parsed_config = {}
@@ -160,6 +163,7 @@ def train_and_evaluate(
         "model_type": model_type,
         "dropout": dropout,
         "hidden": hidden,
+        "use_knowledge": use_knowledge,
     }
     for key, value in args_config.items():
         if value is not None:
@@ -183,6 +187,8 @@ def train_and_evaluate(
         with open(data_path) as f:
             items = []
             for line in f:
+                if "subject_id" not in line:
+                    continue
                 submission = json.loads(line)
                 model_id = submission["subject_id"]
                 for example_id in submission["responses"].keys():

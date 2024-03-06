@@ -44,3 +44,4 @@ class IrtConfig(BaseModel):
     seed: Optional[int] = None
     deterministic: bool = False
     model_config = ConfigDict(protected_namespaces=())
+    use_knowledge: bool = False

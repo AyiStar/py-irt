@@ -41,13 +41,17 @@ class ItemAccuracy(BaseModel):
 
 class Dataset(BaseModel):
     item_ids: Union[Set[str], OrderedSet]
+    knowledge_ids: Union[Set[str], OrderedSet]  # add one knowledge layer
     subject_ids: Union[Set[str], OrderedSet]
     item_id_to_ix: Dict[str, int]
     ix_to_item_id: Dict[int, str]
+    knowledge_id_to_ix: Dict[str, int]
+    ix_to_knowledge_id: Dict[int, str]
     subject_id_to_ix: Dict[str, int]
     ix_to_subject_id: Dict[int, str]
     # observation_subjects and observation_items refers to indices
     observation_subjects: List[int]
+    observation_knowledges: List[int]
     observation_items: List
     # Actual response value, usually an integer
     observations: List[float]
@@ -74,27 +78,44 @@ class Dataset(BaseModel):
     def from_jsonlines(cls, data_path: Path, train_items: dict = None, amortized: bool = False):
         """Parse IRT dataset from jsonlines, formatted in the following way:
         * The dataset is in jsonlines format, each line representing the responses of a subject
-        * Each row looks like this:
+        * Each row looks like one of the following:
         {"subject_id": "<subject_id>", "responses": {"<item_id>": <response>}}
-        * Where <subject_id> is a string, <item_id> is a string, and <response> is a number (usually integer)
+        {"item_id": "<item_id>", "knowledge": "<knowledge_id>"}
+        * Where <subject_id>, <knowledge_id>, <item_id> are strings, and <response> is a number (usually integer)
         """
         item_ids = OrderedSet()
+        knowledge_ids = OrderedSet()
         subject_ids = OrderedSet()
         item_id_to_ix = {}
         ix_to_item_id = {}
+        knowledge_id_to_ix = {}
+        ix_to_knowledge_id = {}
         subject_id_to_ix = {}
         ix_to_subject_id = {}
+        item_id_to_knowledge_id = {}
         input_data = read_jsonlines(data_path)
         for line in input_data:
-            subject_id = line["subject_id"]
-            subject_ids.add(subject_id)
-            responses = line["responses"]
-            for item_id in responses.keys():
-                item_ids.add(item_id)
+            if "subject_id" in line:
+                subject_id = line["subject_id"]
+                subject_ids.add(subject_id)
+                responses = line["responses"]
+                for item_id in responses.keys():
+                    item_ids.add(item_id)
+            elif "item_id" in line:
+                item_id = line["item_id"]
+                knowledge_id = line["knowledge"]
+                item_id_to_knowledge_id[item_id] = knowledge_id
+                knowledge_ids.add(knowledge_id)
+            else:
+                raise ValueError(f"Invalid line parsed: {line}")
 
         for idx, item_id in enumerate(item_ids):
             item_id_to_ix[item_id] = idx
             ix_to_item_id[idx] = item_id
+        
+        for idx, knowledge_id in enumerate(knowledge_ids):
+            knowledge_id_to_ix[knowledge_id] = idx
+            ix_to_knowledge_id[idx] = knowledge_id
 
         for idx, subject_id in enumerate(subject_ids):
             subject_id_to_ix[subject_id] = idx
@@ -106,11 +127,14 @@ class Dataset(BaseModel):
 
         
         observation_subjects = []
+        observation_knowledges = []
         observation_items = []
         observations = []
         training_example = []
         console.log(f'amortized: {amortized}')
         for idx, line in enumerate(input_data):
+            if "subject_id" not in line:
+                continue
             subject_id = line["subject_id"]
             for item_id, response in line["responses"].items():
                 observations.append(response)
@@ -119,19 +143,27 @@ class Dataset(BaseModel):
                     observation_items.append(item_id_to_ix[item_id])
                 else:
                     observation_items.append(vectorizer.transform([item_id]).todense().tolist()[0])
+                if item_id in item_id_to_knowledge_id:
+                    observation_knowledges.append(knowledge_id_to_ix[item_id_to_knowledge_id[item_id]])
                 if train_items is not None:
                     training_example.append(train_items[subject_id][item_id])
                 else:
                     training_example.append(True)
 
+        assert (len(observation_knowledges)) == 0 or (len(observation_knowledges) == len(observation_subjects))
+
         return cls(
             item_ids=item_ids,
             subject_ids=subject_ids,
+            knowledge_ids=knowledge_ids,
             item_id_to_ix=item_id_to_ix,
             ix_to_item_id=ix_to_item_id,
+            knowledge_id_to_ix=knowledge_id_to_ix,
+            ix_to_knowledge_id=ix_to_knowledge_id,
             subject_id_to_ix=subject_id_to_ix,
             ix_to_subject_id=ix_to_subject_id,
             observation_subjects=observation_subjects,
+            observation_knowledges=observation_knowledges,
             observation_items=observation_items,
             observations=observations,
             training_example=training_example,

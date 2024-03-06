@@ -44,15 +44,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-@abstract_model.IrtModel.register("1pl_pred")
-class OneParamLog(abstract_model.IrtModel):
-    """1PL IRT model"""
+@abstract_model.IrtModel.register("1pl_bhm")
+class OneParamBHM(abstract_model.IrtModel):
+    """1PL Hierarchical IRT model"""
 
     def __init__(
             self, *,
             priors: str,
             num_items: int,
             num_subjects: int,
+            num_knowledges: int,
             verbose: bool = False,
             device: str = "cpu",
             vocab_size: int = None,
@@ -63,59 +64,108 @@ class OneParamLog(abstract_model.IrtModel):
         super().__init__(
             device=device, num_items=num_items, num_subjects=num_subjects, verbose=verbose
         )
-        if priors not in ["vague", "hierarchical"]:
-            raise ValueError("Options for priors are vague and hierarchical")
+        self.num_knowledges = num_knowledges
         self.priors = priors
-
-    def model_vague(self, models, items, obs):
-        """Initialize a 1PL model with vague priors"""
-        with pyro.plate("thetas", self.num_subjects, device=self.device):
+        assert self.priors in ["pool", "unpool", "bhm"], f'Prior `{self.priors}` not implemented'
+    
+    
+    def model_pool(self, subjects, items, knowledges, obs):
+        with pyro.plate("subjects", self.num_subjects, device=self.device):
             ability = pyro.sample(
-                "theta",
+                "theta_i",
                 dist.Normal(
                     torch.tensor(0.0, device=self.device), torch.tensor(1.0, device=self.device)
                 ),
             )
 
-        with pyro.plate("bs", self.num_items, device=self.device):
+        with pyro.plate("items", self.num_items, device=self.device):
             diff = pyro.sample(
-                "b",
+                "beta_j",
+                dist.Normal(
+                    torch.tensor(0.0, device=self.device), torch.tensor(1.0e3, device=self.device)
+                ),
+            )
+
+        with pyro.plate("observations", len(items), device=self.device):
+            pyro.sample("obs", dist.Bernoulli(logits=ability[subjects] - diff[items]), obs=obs)
+    
+    
+    def guide_pool(self, models, items, knowledges, obs):
+        # register learnable params in the param store
+        theta_loc_param = pyro.param(
+            "theta_i_loc", torch.zeros(self.num_subjects, device=self.device)
+        )
+        theta_scale_param = pyro.param(
+            "theta_i_scale",
+            torch.ones(self.num_subjects, device=self.device),
+            constraint=constraints.positive,
+        )
+        beta_loc_param = pyro.param("beta_j_loc", torch.zeros(self.num_items, device=self.device))
+        beta_scale_param = pyro.param(
+            "beta_j_scale",
+            torch.empty(self.num_items, device=self.device).fill_(1.0e3),
+            constraint=constraints.positive,
+        )
+
+        # guide distributions
+        with pyro.plate("subjects", self.num_subjects, device=self.device):
+            dist_theta = dist.Normal(theta_loc_param, theta_scale_param)
+            pyro.sample("theta_i", dist_theta)
+        with pyro.plate("items", self.num_items, device=self.device):
+            dist_b = dist.Normal(beta_loc_param, beta_scale_param)
+            pyro.sample("beta_j", dist_b)
+    
+    
+    def model_unpool(self, subjects, items, knowledges, obs):
+        with pyro.plate("subjects", self.num_subjects, device=self.device):
+            with pyro.plate("knowledges", self.num_knowledges, device=self.device):
+                ability = pyro.sample(
+                    "theta_ik",
+                    dist.Normal(
+                        torch.tensor(0.0, device=self.device), torch.tensor(1.0, device=self.device)
+                    ),
+                )
+
+        with pyro.plate("items", self.num_items, device=self.device):
+            diff = pyro.sample(
+                "beta_j",
                 dist.Normal(
                     torch.tensor(0.0, device=self.device), torch.tensor(1.0e3, device=self.device)
                 ),
             )
 
         with pyro.plate("observe_data", len(items), device=self.device):
-            pyro.sample("obs", dist.Bernoulli(logits=ability[models] - diff[items]), obs=obs)
-
-
-    def guide_vague(self, models, items, obs):
-        """Initialize a 1PL guide with vague priors"""
+            pyro.sample("obs", dist.Bernoulli(logits=ability[subjects, knowledges] - diff[items]), obs=obs)
+    
+    
+    def guide_unpool(self, models, items, knowledges, obs):
         # register learnable params in the param store
-        m_theta_param = pyro.param(
-            "loc_ability", torch.zeros(self.num_subjects, device=self.device)
+        theta_loc_param = pyro.param(
+            "theta_ik_loc", torch.zeros(self.num_subjects, self.num_knowledges, device=self.device)
         )
-        s_theta_param = pyro.param(
-            "scale_ability",
-            torch.ones(self.num_subjects, device=self.device),
+        theta_scale_param = pyro.param(
+            "theta_ik_scale",
+            torch.ones(self.num_subjects, self.num_knowledges, device=self.device),
             constraint=constraints.positive,
         )
-        m_b_param = pyro.param("loc_diff", torch.zeros(self.num_items, device=self.device))
-        s_b_param = pyro.param(
-            "scale_diff",
+        beta_loc_param = pyro.param("beta_j_loc", torch.zeros(self.num_items, device=self.device))
+        beta_scale_param = pyro.param(
+            "beta_j_scale",
             torch.empty(self.num_items, device=self.device).fill_(1.0e3),
             constraint=constraints.positive,
         )
 
         # guide distributions
-        with pyro.plate("thetas", self.num_subjects, device=self.device):
-            dist_theta = dist.Normal(m_theta_param, s_theta_param)
-            pyro.sample("theta", dist_theta)
-        with pyro.plate("bs", self.num_items, device=self.device):
-            dist_b = dist.Normal(m_b_param, s_b_param)
-            pyro.sample("b", dist_b)
+        with pyro.plate("subjects", self.num_subjects, device=self.device):
+            with pyro.plate("knowledges", self.num_knowledges, device=self.device):
+                dist_theta = dist.Normal(theta_loc_param, theta_scale_param)
+                pyro.sample("theta_ik", dist_theta)
+        with pyro.plate("items", self.num_items, device=self.device):
+            dist_b = dist.Normal(beta_loc_param, beta_scale_param)
+            pyro.sample("beta_j", dist_b)
 
-    def model_hierarchical(self, models, items, obs):
+
+    def model_bhm(self, subjects, items, knowledges, obs):
         """Initialize a 1PL model with hierarchical priors"""
         mu_b = pyro.sample(
             "mu_b",
@@ -147,9 +197,10 @@ class OneParamLog(abstract_model.IrtModel):
             diff = pyro.sample("b", dist.Normal(mu_b, 1.0 / u_b))
         
         with pyro.plate("observe_data", len(items)):
-            pyro.sample("obs", dist.Bernoulli(logits=ability[models] - diff[items]), obs=obs)
+            pyro.sample("obs", dist.Bernoulli(logits=ability[subjects] - diff[items]), obs=obs)
 
-    def guide_hierarchical(self, models, items, obs):
+
+    def guide_bhm(self, subjects, items, knowledges, obs):
         """Initialize a 1PL guide with hierarchical priors"""
         loc_mu_b_param = pyro.param("loc_mu_b", torch.tensor(0.0, device=self.device))
         scale_mu_b_param = pyro.param(
@@ -200,24 +251,15 @@ class OneParamLog(abstract_model.IrtModel):
             pyro.sample("b", dist.Normal(m_b_param, s_b_param))
 
     def get_model(self):
-        if self.priors == "vague":
-            return self.model_vague
-        else:
-            return self.model_hierarchical
+        return getattr(self, "model_" + self.priors)
 
     def get_guide(self):
-        if self.priors == "vague":
-            return self.guide_vague
-        else:
-            return self.guide_hierarchical
+        return getattr(self, "guide_" + self.priors)
 
     def fit(self, models, items, responses, num_epochs):
         """Fit the IRT model with variational inference"""
         optim = Adam({"lr": 0.1})
-        if self.priors == "vague":
-            svi = SVI(self.model_vague, self.guide_vague, optim, loss=Trace_ELBO())
-        else:
-            svi = SVI(self.model_hierarchical, self.guide_hierarchical, optim, loss=Trace_ELBO())
+        svi = SVI(self.get_model(), self.get_guide*(), optim, loss=Trace_ELBO())
 
         pyro.clear_param_store()
         for j in range(num_epochs):
@@ -226,48 +268,16 @@ class OneParamLog(abstract_model.IrtModel):
                 print("[epoch %04d] loss: %.4f" % (j + 1, loss))
 
         print("[epoch %04d] loss: %.4f" % (j + 1, loss))
-        values = ["loc_diff", "scale_diff", "loc_ability", "scale_ability"]
 
     def export(self):
-        return {
-            "ability": pyro.param("loc_ability").data.tolist(),
-            "ability_scale": pyro.param("scale_ability").data.tolist(),
-            "diff": pyro.param("loc_diff").data.tolist(),
-            "diff_scale": pyro.param("scale_diff").data.tolist()
-        }
+        # TODO
+        return {}
 
-    def fit_MCMC(self, models, items, responses, num_epochs):
-        """Fit the IRT model with MCMC"""
-        sites = ["theta", "b"]
-        nuts_kernel = NUTS(self.model_vague, adapt_step_size=True)
-        hmc_posterior = MCMC(nuts_kernel, num_samples=1000, warmup_steps=100).run(
-            models, items, responses
-        )
-        theta_sum = self.summary(hmc_posterior, ["theta"]).items()
-        b_sum = self.summary(hmc_posterior, ["b"]).items()
-        print(theta_sum)
-        print(b_sum)
-
-    def predict(self, subjects, items, params_from_file=None):
+    def predict(self, subjects, items, knowledges, params_from_file=None):
         """predict p(correct | params) for a specified list of model, item pairs"""
         predictive = pyro.infer.Predictive(self.get_model(), guide=self.get_guide(), num_samples=800)
-        svi_samples = predictive(subjects, items, obs=None)
+        svi_samples = predictive(subjects, items, knowledges, obs=None)
         svi_obs = svi_samples["obs"].data.cpu().numpy().mean(axis=0, keepdims=False).astype(float)
         assert len(svi_obs) == len(subjects), f'len(svi_obs) = {svi_obs.shape}'
         return svi_obs
 
-    def summary(self, traces, sites):
-        """Aggregate marginals for MCM"""
-        marginal = (
-            EmpiricalMarginal(traces, sites)._get_samples_and_weights()[0].detach().cpu().numpy()
-        )
-        print(marginal)
-        site_stats = {}
-        for i in range(marginal.shape[1]):
-            site_name = sites[i]
-            marginal_site = pd.DataFrame(marginal[:, i]).transpose()
-            describe = partial(pd.Series.describe, percentiles=[0.05, 0.25, 0.5, 0.75, 0.95])
-            site_stats[site_name] = marginal_site.apply(describe, axis=1)[
-                ["mean", "std", "5%", "25%", "50%", "75%", "95%"]
-            ]
-        return site_stats
