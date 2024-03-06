@@ -41,6 +41,7 @@ from py_irt.config import IrtConfig
 from py_irt.dataset import Dataset
 from py_irt.models.abstract_model import IrtModel
 from py_irt.io import write_json, write_jsonlines, read_jsonlines, read_json
+from py_irt.evaluation import eval_scores, eval_scores_per_knowledge
 
 console = Console()
 app = typer.Typer(pretty_exceptions_show_locals=False)
@@ -228,12 +229,22 @@ def train_and_evaluate(
             dataset.observation_subjects[i] for i in testing_idx]
         dataset.observation_items = [
             dataset.observation_items[i] for i in testing_idx]
+        if config.use_knowledge:
+            dataset.observation_knowledges = [
+                dataset.observation_knowledges[i] for i in testing_idx]
         dataset.observations = [dataset.observations[i] for i in testing_idx]
         dataset.training_example = [
             dataset.training_example[i] for i in testing_idx]
 
-    preds = trainer.irt_model.predict(
-        dataset.observation_subjects, dataset.observation_items)
+    if config.use_knowledge:
+        subjects = torch.tensor(dataset.observation_subjects, dtype=torch.long, device=device)
+        items = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
+        knowledges = torch.tensor(dataset.observation_knowledges, dtype=torch.long, device=device)
+        preds = trainer.irt_model.predict(subjects, items, knowledges)
+    else:
+        subjects = torch.tensor(dataset.observation_subjects, dtype=torch.long, device=device)
+        items = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
+        preds = trainer.irt_model.predict(subjects, items)
     outputs = []
     for i in range(len(preds)):
         outputs.append(
@@ -245,9 +256,20 @@ def train_and_evaluate(
             }
         )
     write_jsonlines(f"{output_dir}/model_predictions.jsonlines", outputs)
+    
+    scores = eval_scores(preds=preds, responses=dataset.observations)
+    write_json(f"{output_dir}/results.json", scores)
+    console.log("Evaluation scores:", scores)
+    
+    if config.use_knowledge:
+        scores_per_knowledge = eval_scores_per_knowledge(preds=preds, responses=dataset.observations, knowledges=dataset.observation_knowledges)
+        write_json(f"{output_dir}/results_per_knowledge.json", scores_per_knowledge)
+        console.log("Evaluation scores per knowledge:", scores_per_knowledge)
+    
     end_time = time.time()
     elapsed_time = end_time - start_time
     console.log("Evaluation time:", elapsed_time)
+    
 
 
 @app.command()

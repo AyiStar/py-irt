@@ -117,6 +117,7 @@ class OneParamBHM(abstract_model.IrtModel):
     
     
     def model_unpool(self, subjects, items, knowledges, obs):
+        
         with pyro.plate("subjects", self.num_subjects, device=self.device):
             with pyro.plate("knowledges", self.num_knowledges, device=self.device):
                 ability = pyro.sample(
@@ -134,18 +135,19 @@ class OneParamBHM(abstract_model.IrtModel):
                 ),
             )
 
-        with pyro.plate("observe_data", len(items), device=self.device):
-            pyro.sample("obs", dist.Bernoulli(logits=ability[subjects, knowledges] - diff[items]), obs=obs)
+        with pyro.plate("observations", len(items), device=self.device):
+            # print(ability.size(), knowledges.size(), subjects.size(), items.size(), diff.size())
+            pyro.sample("obs", dist.Bernoulli(logits=ability[knowledges, subjects] - diff.squeeze()[items]), obs=obs)
     
     
-    def guide_unpool(self, models, items, knowledges, obs):
+    def guide_unpool(self, subjects, items, knowledges, obs):
         # register learnable params in the param store
         theta_loc_param = pyro.param(
-            "theta_ik_loc", torch.zeros(self.num_subjects, self.num_knowledges, device=self.device)
+            "theta_ik_loc", torch.zeros(self.num_knowledges, self.num_subjects, device=self.device)
         )
         theta_scale_param = pyro.param(
             "theta_ik_scale",
-            torch.ones(self.num_subjects, self.num_knowledges, device=self.device),
+            torch.ones(self.num_knowledges, self.num_subjects, device=self.device),
             constraint=constraints.positive,
         )
         beta_loc_param = pyro.param("beta_j_loc", torch.zeros(self.num_items, device=self.device))
@@ -167,88 +169,97 @@ class OneParamBHM(abstract_model.IrtModel):
 
     def model_bhm(self, subjects, items, knowledges, obs):
         """Initialize a 1PL model with hierarchical priors"""
-        mu_b = pyro.sample(
-            "mu_b",
-            dist.Normal(
-                torch.tensor(0.0, device=self.device), torch.tensor(1.0e6, device=self.device)
-            ),
-        )
-        u_b = pyro.sample(
-            "u_b",
-            dist.Gamma(
-                torch.tensor(1.0, device=self.device), torch.tensor(1.0, device=self.device)
-            ),
-        )
-        mu_theta = pyro.sample(
-            "mu_theta",
-            dist.Normal(
-                torch.tensor(0.0, device=self.device), torch.tensor(1.0e6, device=self.device)
-            ),
-        )
-        u_theta = pyro.sample(
-            "u_theta",
-            dist.Gamma(
-                torch.tensor(1.0, device=self.device), torch.tensor(1.0, device=self.device)
-            ),
-        )
-        with pyro.plate("thetas", self.num_subjects, device=self.device):
-            ability = pyro.sample("theta", dist.Normal(mu_theta, 1.0 / u_theta))
-        with pyro.plate("bs", self.num_items, device=self.device):
-            diff = pyro.sample("b", dist.Normal(mu_b, 1.0 / u_b))
+        with pyro.plate("subjects", self.num_subjects, device=self.device):
+            meta_ability_mu = pyro.sample(
+                "theta_i_mu",
+                dist.Normal(
+                    loc=torch.zeros(self.num_subjects, device=self.device), scale=torch.ones(self.num_subjects, device=self.device)
+                ),
+            )
+            meta_ability_sigma = pyro.sample(
+                "theta_i_sigma",
+                dist.Normal(
+                    loc=torch.zeros(self.num_subjects, device=self.device), scale=torch.ones(self.num_subjects, device=self.device)
+                ),
+                constraints=constraints.positive
+            )
+
+            with pyro.plate("knowledges", self.num_knowledges, device=self.device):
+                with pyro.poutine.handlers.reparam(config={"theta_ik": pyro.infer.reparam.transform.TransformReparam()}):
+                    ability = pyro.sample(
+                        "theta_ik",
+                        dist.TransformedDistribution(
+                            dist.Normal(
+                                loc=torch.zeros(self.num_knowledges, self.num_subjects, device=self.device),
+                                scale=1.0
+                            ),
+                            dist.transforms.AffineTransform(loc=meta_ability_mu, scale=meta_ability_sigma)
+                        ),
+                    )
         
-        with pyro.plate("observe_data", len(items)):
-            pyro.sample("obs", dist.Bernoulli(logits=ability[subjects] - diff[items]), obs=obs)
+        with pyro.plate("items", self.num_items, device=self.device):
+            diff = pyro.sample(
+                "beta_j",
+                dist.Normal(
+                    torch.tensor(0.0, device=self.device), torch.tensor(1.0e3, device=self.device)
+                ),
+            )
+        
+        with pyro.plate("observations", len(items), device=self.device):
+            pyro.sample("obs", dist.Bernoulli(logits=ability[knowledges, subjects] - diff.squeeze()[items]), obs=obs)
 
 
     def guide_bhm(self, subjects, items, knowledges, obs):
         """Initialize a 1PL guide with hierarchical priors"""
-        loc_mu_b_param = pyro.param("loc_mu_b", torch.tensor(0.0, device=self.device))
-        scale_mu_b_param = pyro.param(
-            "scale_mu_b", torch.tensor(1.0e2, device=self.device), constraint=constraints.positive
+        # register learnable params in the param store
+        meta_theta_mu_loc_param = pyro.param(
+            "theta_i_mu_loc", torch.zeros(self.num_subjects, device=self.device)
         )
-        loc_mu_theta_param = pyro.param("loc_mu_theta", torch.tensor(0.0, device=self.device))
-        scale_mu_theta_param = pyro.param(
-            "scale_mu_theta",
-            torch.tensor(1.0e2, device=self.device),
+        meta_theta_mu_scale_param = pyro.param(
+            "theta_i_mu_scale", 0.5 * torch.ones(self.num_subjects, device=self.device), constraint=dist.constraints.positive
+        )
+        meta_theta_logsigma_loc_param = pyro.param(
+            "theta_i_logsigma_loc", torch.zeros(self.num_subjects, device=self.device)
+        )
+        meta_theta_logsigma_scale_param = pyro.param(
+            "theta_i_logsigma_scale", 0.5 * torch.ones(self.num_subjects, device=self.device), constraint=dist.constraints.positive
+        )
+        theta_loc_param = pyro.param(
+            "theta_ik_loc", torch.zeros(self.num_knowledges, self.num_subjects, device=self.device)
+        )
+        theta_scale_param = pyro.param(
+            "theta_ik_scale",
+            torch.ones(self.num_knowledges, self.num_subjects, device=self.device),
             constraint=constraints.positive,
         )
-        alpha_b_param = pyro.param(
-            "alpha_b", torch.tensor(1.0, device=self.device), constraint=constraints.positive
-        )
-        beta_b_param = pyro.param(
-            "beta_b", torch.tensor(1.0, device=self.device), constraint=constraints.positive
-        )
-        alpha_theta_param = pyro.param(
-            "alpha_theta", torch.tensor(1.0, device=self.device), constraint=constraints.positive
-        )
-        beta_theta_param = pyro.param(
-            "beta_theta", torch.tensor(1.0, device=self.device), constraint=constraints.positive
-        )
-        m_theta_param = pyro.param(
-            "loc_ability", torch.zeros(self.num_subjects, device=self.device)
-        )
-        s_theta_param = pyro.param(
-            "scale_ability",
-            torch.ones(self.num_subjects, device=self.device),
-            constraint=constraints.positive,
-        )
-        m_b_param = pyro.param("loc_diff", torch.zeros(self.num_items, device=self.device))
-        s_b_param = pyro.param(
-            "scale_diff",
-            torch.ones(self.num_items, device=self.device),
+        beta_loc_param = pyro.param("beta_j_loc", torch.zeros(self.num_items, device=self.device))
+        beta_scale_param = pyro.param(
+            "beta_j_scale",
+            torch.empty(self.num_items, device=self.device).fill_(1.0e3),
             constraint=constraints.positive,
         )
 
-        # sample statements
-        pyro.sample("mu_b", dist.Normal(loc_mu_b_param, scale_mu_b_param))
-        pyro.sample("u_b", dist.Gamma(alpha_b_param, beta_b_param))
-        pyro.sample("mu_theta", dist.Normal(loc_mu_theta_param, scale_mu_theta_param))
-        pyro.sample("u_theta", dist.Gamma(alpha_theta_param, beta_theta_param))
+        # guide distributions
+        with pyro.plate("subjects", self.num_subjects, device=self.device):
+            theta_i_mu = pyro.sample("theta_i_mu", dist.Normal(loc=meta_theta_mu_loc_param, scale=meta_theta_mu_scale_param))
+            theta_i_sigma = pyro.sample("theta_i_sigma",
+                        dist.TransformedDistribution(
+                            dist.Normal(loc=theta_loc_param, scale=theta_scale_param),
+                            dist.transforms.ExpTransform()
+                        )
+            )
+            with pyro.plate("knowledges", self.num_knowledges, device=self.device):
+                with pyro.poutine.handlers.reparam(config={"theta_ik": pyro.infer.reparam.transform.TransformReparam()}):
+                    pyro.sample("theta_ik",
+                                dist.TransformedDistribution(
+                                    dist.Normal(loc=meta_theta_logsigma_loc_param, scale=meta_theta_logsigma_scale_param),
+                                    dist.transforms.AffineTransform(loc=theta_i_mu, scale=theta_i_sigma)
+                                )
+                    )
 
-        with pyro.plate("thetas", self.num_subjects, device=self.device):
-            pyro.sample("theta", dist.Normal(m_theta_param, s_theta_param))
-        with pyro.plate("bs", self.num_items, device=self.device):
-            pyro.sample("b", dist.Normal(m_b_param, s_b_param))
+        with pyro.plate("items", self.num_items, device=self.device):
+            dist_b = dist.Normal(beta_loc_param, beta_scale_param)
+            pyro.sample("beta_j", dist_b)
 
     def get_model(self):
         return getattr(self, "model_" + self.priors)
@@ -275,9 +286,9 @@ class OneParamBHM(abstract_model.IrtModel):
 
     def predict(self, subjects, items, knowledges, params_from_file=None):
         """predict p(correct | params) for a specified list of model, item pairs"""
-        predictive = pyro.infer.Predictive(self.get_model(), guide=self.get_guide(), num_samples=800)
+        predictive = pyro.infer.Predictive(self.get_model(), guide=self.get_guide(), num_samples=400, parallel=False)
         svi_samples = predictive(subjects, items, knowledges, obs=None)
-        svi_obs = svi_samples["obs"].data.cpu().numpy().mean(axis=0, keepdims=False).astype(float)
+        svi_obs = svi_samples["obs"].squeeze().data.cpu().numpy().mean(axis=0, keepdims=False).astype(float)
         assert len(svi_obs) == len(subjects), f'len(svi_obs) = {svi_obs.shape}'
         return svi_obs
 

@@ -132,9 +132,9 @@ class IrtModelTrainer:
         self._epochs = epochs
         args = {
             "device": device,
-            "num_items": len(self._dataset.ix_to_item_id),
-            "num_subjects": len(self._dataset.ix_to_subject_id),
-            "num_knowledges": len(self._dataset.ix_to_knowledge_id),
+            "num_items": len(self._dataset.item_ids),
+            "num_subjects": len(self._dataset.subject_ids),
+            "num_knowledges": len(self._dataset.knowledge_ids),
         }
         console.log(f'args: {args}')
         # TODO: Find a better solution to this
