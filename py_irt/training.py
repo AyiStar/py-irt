@@ -20,6 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import time
 from typing import Optional, Union, Dict
 from pathlib import Path
 
@@ -184,11 +185,13 @@ class IrtModelTrainer:
         table.add_column("Loss")
         table.add_column("Best Loss")
         table.add_column("New LR")
+        table.add_column("Time/Epoch")
         loss = float("inf")
         best_loss = loss
         current_lr = self._config.lr
         with Live(table, vertical_overflow="visible") as live:
             live.console.print(f"Training Pyro IRT Model for {epochs} epochs")
+            start_time = time.time()
             for epoch in range(epochs):
                 if self._config.use_knowledge:
                     loss = svi.step(subjects, items, knowledges, responses)
@@ -200,11 +203,15 @@ class IrtModelTrainer:
                 scheduler.step()
                 current_lr = current_lr * self._config.lr_decay
                 if epoch % self._config.log_every == 0:
+                    elapsed_time = time.time() - start_time
+                    time_per_ep = elapsed_time / (epoch + 1)
                     table.add_row(
-                        f"{epoch + 1}", "%.4f" % loss, "%.4f" % best_loss, "%.4f" % current_lr
+                        f"{epoch + 1}", "%.4f" % loss, "%.4f" % best_loss, "%.4f" % current_lr, "%.5f" % time_per_ep
                     )
 
-            table.add_row(f"{epoch + 1}", "%.4f" % loss, "%.4f" % best_loss, "%.4f" % current_lr)
+            elapsed_time = time.time() - start_time
+            time_per_ep = elapsed_time / (epoch + 1)
+            table.add_row(f"{epoch + 1}", "%.4f" % loss, "%.4f" % best_loss, "%.4f" % current_lr, "%.5f" % time_per_ep)
             self.last_params = self.export(items)
 
     def export(self, items):

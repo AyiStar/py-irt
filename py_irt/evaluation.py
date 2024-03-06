@@ -33,11 +33,13 @@ def eval_scores_per_knowledge(preds: list[float], responses: list[float | int], 
     
     for knowledge in preds_dict.keys():
         scores = eval_scores(preds=preds_dict[knowledge], responses=responses_dict[knowledge])
+        if scores['auc'] < 0:
+            continue
         acc_dict[knowledge] = scores['acc']
         auc_dict[knowledge] = scores['auc']
     
-    acc_mean = np.mean([x for x in acc_dict.values()])
-    auc_mean = np.mean([x for x in auc_dict.values() if x >= 0])
+    acc_mean = np.mean(list(acc_dict.values()))
+    auc_mean = np.mean(list(auc_dict.values()))
     return {
         'acc/knowledge': acc_mean,
         'auc/knowledge': auc_mean,

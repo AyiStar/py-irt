@@ -33,6 +33,7 @@ import pyro
 import numpy as np
 import typer
 import toml
+import tqdm
 from rich.console import Console
 from sklearn.model_selection import train_test_split
 
@@ -139,7 +140,7 @@ def train_and_evaluate(
     initializers: Optional[List[str]] = None,
     evaluation: str = "heldout",
     seed: int = 42,
-    train_size: float = 0.8,
+    train_size: float = 0.9,
     config_path: Optional[str] = None,
     dropout: Optional[float] = 0.5,
     hidden: Optional[int] = 100,
@@ -236,6 +237,7 @@ def train_and_evaluate(
         dataset.training_example = [
             dataset.training_example[i] for i in testing_idx]
 
+
     if config.use_knowledge:
         subjects = torch.tensor(dataset.observation_subjects, dtype=torch.long, device=device)
         items = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
@@ -245,6 +247,25 @@ def train_and_evaluate(
         subjects = torch.tensor(dataset.observation_subjects, dtype=torch.long, device=device)
         items = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
         preds = trainer.irt_model.predict(subjects, items)
+
+    
+    """# batch
+    sample_size = len(dataset.observations)
+    batch_size = 1028
+    num_batch = ((sample_size - 1) // batch_size) + 1
+    preds = []
+    for i in tqdm.trange(num_batch):
+        subjects = dataset.observation_subjects[(i * batch_size): ((i+1) * batch_size)]
+        items = dataset.observation_items[(i * batch_size): ((i+1) * batch_size)]
+        knowledges = dataset.observation_knowledges[(i * batch_size): ((i+1) * batch_size)]
+        batch_preds = trainer.irt_model.predict(
+            torch.tensor(subjects, dtype=torch.long, device=device),
+            torch.tensor(items, dtype=torch.long, device=device),
+            torch.tensor(knowledges, dtype=torch.long, device=device),
+        )
+        preds.extend(batch_preds)
+    """
+    
     outputs = []
     for i in range(len(preds)):
         outputs.append(
