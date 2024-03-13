@@ -231,8 +231,12 @@ class OneParamBHM(abstract_model.IrtModel):
         print("[epoch %04d] loss: %.4f" % (j + 1, loss))
 
     def export(self):
-        # TODO
-        return {}
+        params = pyro.get_param_store()
+        param_dict = {}
+        for name, value in params.items():
+            param_dict[name] = value.data.cpu().numpy().tolist()
+        result = {'params': param_dict}
+        return result
 
     def predict(self, subjects, items, knowledges, params_from_file=None):
         """predict p(correct | params) for a specified list of model, item pairs"""
