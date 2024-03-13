@@ -236,7 +236,7 @@ class OneParamBHM(abstract_model.IrtModel):
 
     def predict(self, subjects, items, knowledges, params_from_file=None):
         """predict p(correct | params) for a specified list of model, item pairs"""
-        predictive = pyro.infer.Predictive(self.get_model(), guide=self.get_guide(), num_samples=800, parallel=False)
+        predictive = pyro.infer.Predictive(self.get_model(), guide=self.get_guide(), num_samples=100, parallel=False)
         svi_samples = predictive(subjects.to(self.device), items.to(self.device), knowledges.to(self.device), obs=None)
         svi_obs = svi_samples["obs"].squeeze().data.cpu().numpy().mean(axis=0, keepdims=False).astype(float)
         assert len(svi_obs) == len(subjects), f'len(svi_obs) = {svi_obs.shape}'

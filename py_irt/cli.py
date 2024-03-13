@@ -139,6 +139,7 @@ def train_and_evaluate(
     lr_decay: Optional[float] = None,
     initializers: Optional[List[str]] = None,
     evaluation: str = "heldout",
+    test_path: str = "",
     seed: int = 42,
     train_size: float = 0.9,
     config_path: Optional[str] = None,
@@ -182,32 +183,63 @@ def train_and_evaluate(
     console.log(f"config: {config}")
 
     console.log(f"data_path: {data_path}")
+    console.log(f"test_path: {test_path if test_path else 'None'}")
     console.log(f"output directory: {output_dir}")
 
 #    config = IrtConfig(model_type=model_type, epochs=epochs, initializers=initializers)
     if evaluation == "heldout":
+        console.log("Randomly splitting held-out data for evaluation")
         with open(data_path) as f:
-            items = []
+            pairs = []
             for line in f:
                 if "subject_id" not in line:
                     continue
                 submission = json.loads(line)
-                model_id = submission["subject_id"]
+                subject_id = submission["subject_id"]
                 for example_id in submission["responses"].keys():
-                    items.append((model_id, example_id))
+                    pairs.append((subject_id, example_id))
             train, test = train_test_split(
-                items, train_size=train_size, random_state=seed)
+                pairs, train_size=train_size, random_state=seed)
             training_dict = {}
-            for model_id, example_id in train:
-                training_dict.setdefault(model_id, dict())
-                training_dict[model_id][example_id] = True
-            for model_id, example_id in test:
-                training_dict.setdefault(model_id, dict())
-                training_dict[model_id][example_id] = False
+            for subject_id, example_id in train:
+                training_dict.setdefault(subject_id, dict())
+                training_dict[subject_id][example_id] = True
+            for subject_id, example_id in test:
+                training_dict.setdefault(subject_id, dict())
+                training_dict[subject_id][example_id] = False
+        dataset = Dataset.from_jsonlines(
+            data_path, train_items=training_dict, amortized=amortized)
+
+    elif evaluation == "separate":
+        console.log("Use seperate testing file for evaluation")
+        assert len(test_path) > 0
+        with open(data_path) as f, open(test_path) as ft:
+            pairs = []
+            for line in f:
+                if "subject_id" not in line:
+                    continue
+                submission = json.loads(line)
+                subject_id = submission["subject_id"]
+                for example_id in submission["responses"].keys():
+                    pairs.append((subject_id, example_id))
+            
+            test_pairs = []
+            for line in ft:
+                submission = json.loads(line)
+                test_pairs.append((submission["subject_id"], submission["item_id"]))
+            
+            training_dict = {}
+            for subject_id, example_id in pairs:
+                training_dict.setdefault(subject_id, dict())
+                training_dict[subject_id][example_id] = True
+            for subject_id, example_id in test_pairs:
+                training_dict.setdefault(subject_id, dict())
+                training_dict[subject_id][example_id] = False
+        
         dataset = Dataset.from_jsonlines(
             data_path, train_items=training_dict, amortized=amortized)
     else:
-        dataset = Dataset.from_jsonlines(data_path, amortized=amortized)
+        raise NotImplementedError()
 
     # deep copy for training
     training_data = copy.deepcopy(dataset)
@@ -237,35 +269,16 @@ def train_and_evaluate(
         dataset.training_example = [
             dataset.training_example[i] for i in testing_idx]
 
-
     if config.use_knowledge:
         subjects = torch.tensor(dataset.observation_subjects, dtype=torch.long, device=device)
-        items = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
+        pairs = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
         knowledges = torch.tensor(dataset.observation_knowledges, dtype=torch.long, device=device)
-        preds = trainer.irt_model.predict(subjects, items, knowledges)
+        preds = trainer.irt_model.predict(subjects, pairs, knowledges)
     else:
         subjects = torch.tensor(dataset.observation_subjects, dtype=torch.long, device=device)
-        items = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
-        preds = trainer.irt_model.predict(subjects, items)
+        pairs = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
+        preds = trainer.irt_model.predict(subjects, pairs)
 
-    
-    """# batch
-    sample_size = len(dataset.observations)
-    batch_size = 1028
-    num_batch = ((sample_size - 1) // batch_size) + 1
-    preds = []
-    for i in tqdm.trange(num_batch):
-        subjects = dataset.observation_subjects[(i * batch_size): ((i+1) * batch_size)]
-        items = dataset.observation_items[(i * batch_size): ((i+1) * batch_size)]
-        knowledges = dataset.observation_knowledges[(i * batch_size): ((i+1) * batch_size)]
-        batch_preds = trainer.irt_model.predict(
-            torch.tensor(subjects, dtype=torch.long, device=device),
-            torch.tensor(items, dtype=torch.long, device=device),
-            torch.tensor(knowledges, dtype=torch.long, device=device),
-        )
-        preds.extend(batch_preds)
-    """
-    
     outputs = []
     for i in range(len(preds)):
         outputs.append(
