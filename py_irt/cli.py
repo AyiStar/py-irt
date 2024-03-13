@@ -271,20 +271,20 @@ def train_and_evaluate(
 
     if config.use_knowledge:
         subjects = torch.tensor(dataset.observation_subjects, dtype=torch.long, device=device)
-        pairs = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
+        items = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
         knowledges = torch.tensor(dataset.observation_knowledges, dtype=torch.long, device=device)
-        preds = trainer.irt_model.predict(subjects, pairs, knowledges)
+        preds = trainer.irt_model.predict(subjects, items, knowledges)
     else:
         subjects = torch.tensor(dataset.observation_subjects, dtype=torch.long, device=device)
-        pairs = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
-        preds = trainer.irt_model.predict(subjects, pairs)
+        items = torch.tensor(dataset.observation_items, dtype=torch.long, device=device)
+        preds = trainer.irt_model.predict(subjects, items)
 
     outputs = []
     for i in range(len(preds)):
         outputs.append(
             {
-                "subject_id": dataset.observation_subjects[i],
-                "example_id": dataset.observation_items[i],
+                "subject_id": dataset.ix_to_subject_id[dataset.observation_subjects[i]],
+                "example_id": dataset.ix_to_item_id[dataset.observation_items[i]],
                 "response": dataset.observations[i],
                 "prediction": preds[i],
             }
